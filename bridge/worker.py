@@ -1,4 +1,5 @@
 import logging
+import sys
 import threading
 import time
 import typing as t
@@ -6,9 +7,13 @@ import typing as t
 from threading import Thread
 
 import google.protobuf.json_format as json_format
-import paho.mqtt.client as mqtt
 
 from meshtastic import mqtt_pb2 as mqtt_pb2
+from paho.mqtt.client import Client
+from paho.mqtt.enums import CallbackAPIVersion
+
+
+logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
 
 # Time between packets when forwarding is blocked
@@ -20,8 +25,14 @@ storage_msg: dict[str, t.Any] = dict()
 
 # Connection parametrs
 mqtt_pr = {
-    'kyiv': {'server': '', 'user': '', 'passwd': '', 'topic': "msh/2/c/LongFast/", 'id': '!ffffff01'},
-    'odessa': {'server': '', 'user': '', 'passwd': '', 'topic': "msh/2/c/LongFast/", 'id': '!ffffff02'},
+    'kyiv': {'server': 'mqtt-broker1', 'user': 'test', 'passwd': 'test', 'topic': "msh/c/LongFast/", 'id': '!ffffff01'},
+    'odessa': {
+        'server': 'mqtt-broker2',
+        'user': 'test',
+        'passwd': 'test',
+        'topic': "msh/c/LongFast/",
+        'id': '!ffffff02',
+    },
 }
 clients: dict[str, "MqttListener"] = dict()
 
@@ -82,9 +93,9 @@ class MqttListener(Thread):
             logging.error("MQTT store & forward failed")
             return
 
-    def on_connect(self, client, userdata, flags, rc):
+    def on_connect(self, client, userdata, flags, reason_code, properties):
         """Connection callback"""
-        logging.info("Connected with result code %s", rc)
+        logging.info("Connected with result code %s", reason_code)
         client.subscribe(mqtt_pr[self.serv_name]['topic'] + "#")
 
     def on_message(self, client, userdata, msg):
@@ -100,24 +111,10 @@ class MqttListener(Thread):
         receiver_thread.start()
 
     def run(self):
-        client = mqtt.Client()
+        client = Client(CallbackAPIVersion.VERSION2)
         client.on_connect = self.on_connect
         client.on_message = self.on_message
         client.username_pw_set(self.mqtt_param['user'], self.mqtt_param['passwd'])
         client.connect(self.mqtt_param['server'], 1883, 60)
         mqtt_pr[self.serv_name]['client'] = client
         client.loop_forever()
-
-
-if __name__ == "__main__":
-    for name, config in mqtt_pr.items():
-        logging.info("Creating Thread for %s", name)
-        clients[name] = MqttListener(mqtt_pr[name], name)
-        clients[name].start()
-    while True:
-        for name in mqtt_pr:
-            if not clients[name].is_alive():
-                logging.info("Restarting Thread for %s", name)
-                clients[name] = MqttListener(mqtt_pr[name], name)
-                clients[name].start()
-        time.sleep(60)
