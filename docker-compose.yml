@@ -4,11 +4,15 @@ services:
     image: eclipse-mosquitto:2.0
     volumes:
       - ./tests/config:/mosquitto/config
-  mqtt-broker2:
-    <<: *mqtt-broker
     ports:
       - 1883:1883
       - 9001:9001
+#
+#  mqtt-broker2:
+#    <<: *mqtt-broker
+#    ports:
+#      - 1883:1883
+#      - 9001:9001
   bridge:
     image: nimnull/mqtt-bridge:local
     build:
@@ -16,11 +20,12 @@ services:
       dockerfile: ./Dockerfile
     depends_on:
       - mqtt-broker1
-      - mqtt-broker2
+#      - mqtt-broker2
     links:
       - mqtt-broker1:mqtt-broker1
-      - mqtt-broker2:mqtt-broker2
+#      - mqtt-broker2:mqtt-broker2
     volumes:
-      - ./:/opt/srv
+#      - ./:/opt/srv
+      - ./config.yaml:/opt/config.yaml
     ports:
       - "8080:8080"

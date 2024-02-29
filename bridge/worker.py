@@ -1,120 +1,123 @@
 import logging
 import sys
-import threading
 import time
 import typing as t
 
-from threading import Thread
-
 import google.protobuf.json_format as json_format
-
 from meshtastic import mqtt_pb2 as mqtt_pb2
 from paho.mqtt.client import Client
 from paho.mqtt.enums import CallbackAPIVersion
 
-
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
 
-# Time between packets when forwarding is blocked
-PACKET_BLOCK_TIME = 1800
-# Queue text packets to check duplicates
-PACKET_BLOCK_QUEUE = 10
-# Node and packets main database
-storage_msg: dict[str, t.Any] = dict()
+class CappedQueue:
+    def __init__(self, size: int = 10):
+        self.max_size = size
+        self._q = list()
+        self.updated_at: int = 0
 
-# Connection parametrs
-mqtt_pr = {
-    'kyiv': {'server': 'mqtt-broker1', 'user': 'test', 'passwd': 'test', 'topic': "msh/c/LongFast/", 'id': '!ffffff01'},
-    'odessa': {
-        'server': 'mqtt-broker2',
-        'user': 'test',
-        'passwd': 'test',
-        'topic': "msh/c/LongFast/",
-        'id': '!ffffff02',
-    },
-}
-clients: dict[str, "MqttListener"] = dict()
+    def add(self, item: t.Any) -> bool:
+        as_set = set(self._q)
+        q_size = len(as_set)
+        if item not in self._q and q_size < self.max_size:
+            self._q.append(item)
+        elif item not in self._q and q_size >= self.max_size:
+            self._q.pop(0)
+            self._q.append(item)
+        else:
+            return False
+
+        self.updated_at = int(time.time())
+        return True
+
+    @classmethod
+    def create_with(cls, item: t.Any) -> "CappedQueue":
+        queue = cls()
+        queue.add(item)
+        return queue
+
+    def __str__(self):
+        return f"<CappedQueue(size={self.max_size}) ids: {self._q}, updated at: {self.updated_at}>"
 
 
-class MqttListener(Thread):
+class MqttListener:
+    # Time between packets when forwarding is blocked
+    PACKET_BLOCK_TIME = 1800
+    # Queue text packets to check duplicates
+    PACKET_BLOCK_QUEUE = 10
+    # Node and packets main database
+    storage_msg: dict[str, t.Any] = dict()
 
-    def __init__(self, mqtt_param, serv_name):
-        super().__init__()
-        self.mqtt_param = mqtt_param
-        self.serv_name = serv_name
+    def __init__(self, configuration: dict):
+        self.config: dict = configuration
+        self.clients: dict[str, Client] = dict()
 
-    def publish(self, msg):
+    def broadcast(self, from_client, msg, id: int):
         """#Publish to MQTT"""
-        for s in mqtt_pr:
-            if s != self.serv_name:
-                client = mqtt_pr[s]['client']
-                result = client.publish(mqtt_pr[s]['topic'] + mqtt_pr[s]['id'], msg)
-                status = result[0]
-                if status != 0:
-                    logging.info("%s send status %s", s, status)
+        for server_name, client_instance in self.clients.items():
+            if client_instance is from_client:
+                continue
+            topic = f"{self.config[server_name]['topic']}/{self.config[server_name]['id']}"
+            logging.info("Re-broadcasted %d for %s", id, server_name)
+            result = client_instance.publish(topic, msg)
+            if result[0] != 0:
+                logging.info("%s send status %s", server_name, result[0])
 
     # Check recived packet function
-    def check_recived_pack(self, client, userdata, msg):
-        unix_time = int(time.time())
+    def check_recived_pack(self, client, msg):
+        unix_now = int(time.time())
         try:
-            m = mqtt_pb2.ServiceEnvelope().FromString(msg.payload)
-            asDict = json_format.MessageToDict(m)
+            message = mqtt_pb2.ServiceEnvelope().FromString(msg.payload)
+            asDict = json_format.MessageToDict(message)
+            logging.info("Recieved: %s", asDict)
+
             portnum = asDict['packet']['decoded']['portnum']
             id = asDict['packet']['id']
             from_node = asDict['packet']['from']
-            if not (from_node in storage_msg.keys()):
-                storage_msg[from_node] = {portnum: {'id': [id], 'time': unix_time}}
-                self.publish(msg.payload)
-            else:
-                if portnum in storage_msg[from_node].keys():
-                    node_base = storage_msg[from_node][portnum]
-                    if portnum in ['TEXT_MESSAGE_APP', 'TRACEROUTE_APP', 'ROUTING_APP']:
-                        if id not in node_base['id']:
-                            node_base['id'].append(id)
-                            node_base['time'] = unix_time
-                            logging.info("text msg from %s", self.serv_name)
-                            self.publish(msg.payload)
-                            if len(node_base['id']) > PACKET_BLOCK_QUEUE:
-                                node_base['id'].pop(0)
-                                logging.info("popped %s", node_base['id'])
-                    else:
-                        if (unix_time - node_base['time']) > PACKET_BLOCK_TIME:
-                            node_base['id'].append(id)
-                            node_base['time'] = unix_time
-                            self.publish(msg.payload)
-                            if len(node_base['id']) > PACKET_BLOCK_QUEUE:
-                                node_base['id'].pop(0)
 
+            if from_node not in self.storage_msg.keys():
+                self.storage_msg[from_node] = {portnum: CappedQueue.create_with(id)}
+                self.broadcast(client, msg.payload, id)
+            else:
+                if portnum in self.storage_msg[from_node].keys():
+                    node_messages: CappedQueue = self.storage_msg[from_node][portnum]
+                    if portnum in ['TEXT_MESSAGE_APP', 'TRACEROUTE_APP', 'ROUTING_APP'] and node_messages.add(id):
+                        self.broadcast(msg.payload, id)
+                    elif (unix_now - node_messages.updated_at) > self.PACKET_BLOCK_TIME and node_messages.add(id):
+                        self.broadcast(msg.payload, id)
                 else:
-                    storage_msg[from_node][portnum] = {'id': [id], 'time': unix_time}
-                    self.publish(msg.payload)
-        except Exception:
-            logging.error("MQTT store & forward failed")
+                    self.storage_msg[from_node][portnum] = CappedQueue.create_with(id)
+                    self.broadcast(msg.payload, id)
+        except Exception as err:
+            logging.error("MQTT store & forward failed: %s", err)
             return
 
-    def on_connect(self, client, userdata, flags, reason_code, properties):
+    def on_connect(self, server_name):
         """Connection callback"""
-        logging.info("Connected with result code %s", reason_code)
-        client.subscribe(mqtt_pr[self.serv_name]['topic'] + "#")
+        def wrapped(client, userdata, flags, reason_code, properties):
+            client.subscribe(f"{self.config[server_name]['topic']}/#")
+            logging.info("Connected to %s with result code %s", server_name, reason_code)
+
+        return wrapped
 
     def on_message(self, client, userdata, msg):
         """Received MQTT message callback"""
-        receiver_thread = threading.Thread(
-            target=self.check_recived_pack,
-            args=(
-                client,
-                userdata,
-                msg,
-            ),
-        )
-        receiver_thread.start()
+        self.check_recived_pack(client, msg)
 
     def run(self):
-        client = Client(CallbackAPIVersion.VERSION2)
-        client.on_connect = self.on_connect
-        client.on_message = self.on_message
-        client.username_pw_set(self.mqtt_param['user'], self.mqtt_param['passwd'])
-        client.connect(self.mqtt_param['server'], 1883, 60)
-        mqtt_pr[self.serv_name]['client'] = client
-        client.loop_forever()
+        for server_name, client_settings in self.config.items():
+            client = Client(CallbackAPIVersion.VERSION2)
+            client.on_connect = self.on_connect(server_name)
+            client.on_message = self.on_message
+            client.username_pw_set(client_settings["username"], client_settings["password"])
+            client.connect(client_settings["address"], 1883, 60)
+            client.enable_logger()
+            client.loop_start()
+            self.clients[server_name] = client
+
+        while True:
+            for server_name, client in self.clients.items():
+                if not client.is_connected():
+                    logging.info("Disconnected from %s", server_name)
+            time.sleep(15)

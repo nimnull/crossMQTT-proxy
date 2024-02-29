@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "crossmqtt-proxy"
-version = "0.1.0"
+version = "0.1.1"
 description = "mqtt proxy bridge"
 authors = [
     "Rood Yurii <roodjuriy@gmail.com>",
@@ -13,13 +13,16 @@ packages = [
     { include = "bridge" },
 ]
 
+[tool.poetry.scripts]
+mqtt_bridge = "bridge.cli:run"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
 meshtastic = "^2.2.21"
 protobuf = "^4.25.3"
 paho-mqtt = "^2.0.0"
-setuptools = "^69.1.0"
+click = "^8.1.7"
+setuptools = "^69.1.1"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.0.4"

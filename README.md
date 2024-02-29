@@ -2,8 +2,11 @@
 
 mqtt proxy bridge
 
-# Dependencies
-	pip install -r requirements.txt
+tested with mosquitto v2.0.11
 
-# run
-	python ./main.py
+# Development env
+	make setup_dev
+    make run_local
+
+# Run release
+    docker run nimnull/mqtt-bridge:latest -v ./config.yml:/opt/config.yaml

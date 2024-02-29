@@ -21,8 +21,8 @@ setup_dev: setup
 	pre-commit install
 
 .PHONY: run_local
-run_local: migrate
-	poetry run python -m bridge
+run_local:
+	poetry run mqtt_bridge -c /opt/config.yaml
 
 .PHONY: healthcheck
 healthcheck:
@@ -31,6 +31,9 @@ healthcheck:
 
 build:
 	docker build -t nimnull/mqtt-bridge:local .
+
+shell:
+	docker-compose run bridge /bin/bash
 
 test:
 	docker-compose down

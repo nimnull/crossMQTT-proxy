@@ -1,0 +1,13 @@
+servers:
+    kyiv:
+      address: 192.168.125.3
+      username: test
+      password: test
+      topic: msh/c/LongFast
+      id: "!ffffff01"
+    rpi:
+        address: 192.168.125.2
+        username: test
+        password: test
+        topic: msh/c/LongFast
+        id: "!ffffff02"
